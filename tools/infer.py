@@ -1,16 +1,40 @@
 import torch
 import argparse
 import os
+import sys
 import yaml
 import random
+import numpy as np
 from torchvision.ops import nms
 from tqdm import tqdm
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from models.yolo import YOLOV1
 from dataset.voc import VOCDataset
 from utils.visualization_utils import *
 from torch.utils.data.dataloader import DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def _resolve_project_path(path):
+    if os.path.isabs(path):
+        return path
+    return os.path.join(PROJECT_ROOT, path)
+
+
+def _resolve_dataset_path(path):
+    resolved_path = _resolve_project_path(path)
+    if os.path.exists(resolved_path):
+        return resolved_path
+
+    alt_path = os.path.join(PROJECT_ROOT, 'data', 'VOCdevkit', os.path.basename(path))
+    if os.path.exists(alt_path):
+        return alt_path
+    return resolved_path
 
 
 def get_iou(det, gt):
@@ -165,17 +189,27 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
 
 def load_model_and_dataset(args):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
+    config_path = _resolve_project_path(args.config_path)
+    with open(config_path, 'r') as file:
         try:
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
-            raise ValueError(f'Failed to parse config file: {args.config_path}') from exc
+            raise ValueError(f'Failed to parse config file: {config_path}') from exc
     print(config)
     ########################
 
     dataset_config = config['dataset_params']
     model_config = config['model_params']
     train_config = config['train_params']
+    dataset_config['train_im_sets'] = [
+        _resolve_dataset_path(im_set)
+        for im_set in dataset_config['train_im_sets']
+    ]
+    dataset_config['test_im_sets'] = [
+        _resolve_dataset_path(im_set)
+        for im_set in dataset_config['test_im_sets']
+    ]
+    train_config['task_name'] = _resolve_project_path(train_config['task_name'])
 
     voc = VOCDataset('test',
                      im_sets=dataset_config['test_im_sets'],
@@ -242,8 +276,15 @@ def convert_yolo_pred_x1y1x2y2(yolo_pred, S, B, C, use_sigmoid=False):
 
 
 def infer(args):
-    if not os.path.exists('samples'):
-        os.mkdir('samples')
+    samples_dir = _resolve_project_path('samples')
+    if not os.path.exists(samples_dir):
+        os.mkdir(samples_dir)
+    preds_dir = os.path.join(samples_dir, 'preds')
+    grid_cls_dir = os.path.join(samples_dir, 'grid_cls')
+    if not os.path.exists(preds_dir):
+        os.mkdir(preds_dir)
+    if not os.path.exists(grid_cls_dir):
+        os.mkdir(grid_cls_dir)
 
     yolo_model, voc, test_dataset, config = load_model_and_dataset(args)
     conf_threshold = config['train_params']['infer_conf_threshold']
@@ -285,11 +326,6 @@ def infer(args):
         # Visualization #
         #################
 
-        if not os.path.exists('samples/preds'):
-            os.mkdir('samples/preds')
-        if not os.path.exists('samples/grid_cls'):
-            os.mkdir('samples/grid_cls')
-
         im = cv2.imread(fname)
         if im is None:
             raise FileNotFoundError(f'Failed to read image: {fname}')
@@ -304,7 +340,7 @@ def infer(args):
                             category_id_to_name=voc.idx2label,
                             scores=scores.detach().cpu().numpy())
 
-        cv2.imwrite('samples/preds/{}_pred.jpeg'.format(i), out_img)
+        cv2.imwrite(os.path.join(preds_dir, '{}_pred.jpeg'.format(i)), out_img)
 
         # Below lines of code are only for drawing class prob map
         im = cv2.resize(im, (yolo_model.im_size, yolo_model.im_size))
@@ -324,7 +360,7 @@ def infer(args):
         res = cv2.addWeighted(rect_im, 0.5, grid_im, 0.5, 1.0)
         # Write class labels on grid on this image
         res = draw_cls_text(res, cls_idx, voc.idx2label, (yolo_model.S, yolo_model.S))
-        cv2.imwrite('samples/grid_cls/{}_grid_map.jpeg'.format(i), res)
+        cv2.imwrite(os.path.join(grid_cls_dir, '{}_grid_map.jpeg'.format(i)), res)
     print('Done Detecting...')
 
 

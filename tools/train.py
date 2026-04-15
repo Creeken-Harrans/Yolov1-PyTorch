@@ -147,10 +147,13 @@ def train(args):
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
+    progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
     for epoch_idx in range(num_epochs):
         losses = []
         optimizer.zero_grad()
-        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset)):
+        for idx, (ims, targets, _) in enumerate(
+            tqdm(train_dataset, dynamic_ncols=True, bar_format=progress_bar_format)
+        ):
             yolo_targets = torch.cat([
                 target['yolo_targets'].unsqueeze(0).float().to(device)
                 for target in targets], dim=0)
@@ -164,18 +167,18 @@ def train(args):
                 optimizer.step()
                 optimizer.zero_grad()
             if steps % train_config['log_steps'] == 0:
-                print('Loss : {:.4f}'.format(np.mean(losses)))
+                tqdm.write('Loss : {:.6f}'.format(np.mean(losses)))
             if torch.isnan(loss):
-                print('Loss is becoming nan. Exiting')
+                tqdm.write('Loss is becoming nan. Exiting')
                 exit(0)
             steps += 1
-        print('Finished epoch {}'.format(epoch_idx+1))
+        tqdm.write('Finished epoch {}'.format(epoch_idx + 1))
         optimizer.step()
         optimizer.zero_grad()
         scheduler.step()
         torch.save(yolo_model.state_dict(), os.path.join(train_config['task_name'],
                                                          train_config['ckpt_name']))
-    print('Done Training...')
+    tqdm.write('Done Training...')
 
 
 if __name__ == '__main__':

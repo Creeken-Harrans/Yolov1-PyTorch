@@ -1,9 +1,16 @@
 import torch
 import argparse
 import os
+import sys
+import math
 import numpy as np
 import yaml
 import random
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from models.yolo import YOLOV1
 from tqdm import tqdm
 from dataset.voc import VOCDataset
@@ -22,19 +29,79 @@ def collate_function(data):
     return list(zip(*data))
 
 
+def _resolve_project_path(path):
+    if os.path.isabs(path):
+        return path
+    return os.path.join(PROJECT_ROOT, path)
+
+
+def _resolve_dataset_path(path):
+    resolved_path = _resolve_project_path(path)
+    if os.path.exists(resolved_path):
+        return resolved_path
+
+    alt_path = os.path.join(PROJECT_ROOT, 'data', 'VOCdevkit', os.path.basename(path))
+    if os.path.exists(alt_path):
+        return alt_path
+    return resolved_path
+
+
+def _adjust_batch_size_for_device(train_config):
+    if device.type != 'cuda':
+        return
+
+    total_memory_gib = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+    original_batch_size = train_config['batch_size']
+    adjusted_batch_size = original_batch_size
+
+    if total_memory_gib <= 8 and original_batch_size > 2:
+        adjusted_batch_size = 2
+    elif total_memory_gib <= 12 and original_batch_size > 4:
+        adjusted_batch_size = 4
+    elif total_memory_gib <= 16 and original_batch_size > 8:
+        adjusted_batch_size = 8
+
+    if adjusted_batch_size == original_batch_size:
+        return
+
+    scale = math.ceil(original_batch_size / adjusted_batch_size)
+    train_config['batch_size'] = adjusted_batch_size
+    train_config['acc_steps'] *= scale
+    print(
+        'Adjusted batch_size from {} to {} for {:.2f} GiB GPU memory; '
+        'updated acc_steps to {}'.format(
+            original_batch_size,
+            adjusted_batch_size,
+            total_memory_gib,
+            train_config['acc_steps'],
+        )
+    )
+
+
 def train(args):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
+    config_path = _resolve_project_path(args.config_path)
+    with open(config_path, 'r') as file:
         try:
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
-            raise ValueError(f'Failed to parse config file: {args.config_path}') from exc
+            raise ValueError(f'Failed to parse config file: {config_path}') from exc
     print(config)
     ########################
 
     dataset_config = config['dataset_params']
     model_config = config['model_params']
     train_config = config['train_params']
+    dataset_config['train_im_sets'] = [
+        _resolve_dataset_path(im_set)
+        for im_set in dataset_config['train_im_sets']
+    ]
+    dataset_config['test_im_sets'] = [
+        _resolve_dataset_path(im_set)
+        for im_set in dataset_config['test_im_sets']
+    ]
+    train_config['task_name'] = _resolve_project_path(train_config['task_name'])
+    _adjust_batch_size_for_device(train_config)
 
     seed = train_config['seed']
     torch.manual_seed(seed)
@@ -44,7 +111,11 @@ def train(args):
         torch.cuda.manual_seed_all(seed)
 
     voc = VOCDataset('train',
-                     im_sets=dataset_config['train_im_sets'])
+                     im_sets=dataset_config['train_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     S=model_config['S'],
+                     B=model_config['B'],
+                     C=dataset_config['num_classes'])
     train_dataset = DataLoader(voc,
                                batch_size=train_config['batch_size'],
                                shuffle=True,

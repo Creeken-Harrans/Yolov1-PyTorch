@@ -112,11 +112,10 @@ class VOCDataset(Dataset):
                     always_apply=True
                 ),
                 albu.ColorJitter(
-                    brightness=(0.8, 1.2),
-                    contrast=(0.8, 1.2),
-                    saturation=(0.8, 1.2),
-                    hue=(-0.2, 0.2),
-                    always_apply=None,
+                    brightness=0.2,
+                    contrast=0.2,
+                    saturation=0.2,
+                    hue=0.2,
                     p=0.5,
                 ),
                 albu.Resize(self.im_size, self.im_size)],
